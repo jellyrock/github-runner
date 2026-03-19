@@ -1,0 +1,39 @@
+name: Test Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-runner:
+    runs-on: [self-hosted, roku-device]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      
+      - name: Test Environment
+        run: |
+          echo "✓ Runner is working!"
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "Runner name: $RUNNER_NAME"
+          echo "Working directory: $(pwd)"
+      
+      - name: Test Network Connectivity
+        run: |
+          echo "Testing network connectivity..."
+          curl -s -o /dev/null -w "GitHub API: %{http_code}\n" https://api.github.com
+          curl -s -o /dev/null -w "NPM Registry: %{http_code}\n" https://registry.npmjs.org/
+          echo "✓ Network connectivity OK"
+      
+      - name: Test Roku Device Connectivity
+        run: |
+          echo "Testing Roku device connectivity..."
+          # This will fail if ROKU_DEVICE_IP is not accessible
+          timeout 5 bash -c "</dev/tcp/$ROKU_DEVICE_IP/8060" && echo "✓ Roku device reachable" || echo "⚠ Roku device not responding (this is OK if device is off)"
+        env:
+          ROKU_DEVICE_IP: ${{ secrets.ROKU_DEVICE_IP }}

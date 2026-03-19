@@ -1,0 +1,16 @@
+[Unit]
+Description=GitHub Actions Self-Hosted Runner for Roku Tests
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/github-runner
+ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml up --abort-on-container-exit --force-recreate
+ExecStop=/usr/bin/docker compose -f docker-compose.yml down
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

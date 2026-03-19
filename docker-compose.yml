@@ -1,0 +1,88 @@
+services:
+  roku-runner:
+    image: myoung34/github-runner:latest
+    container_name: roku-runner
+    environment:
+      # Runner configuration - uses RUNNER_NAME from .env or defaults to roku-runner-01
+      - RUNNER_NAME=${RUNNER_NAME:-roku-runner-01}
+      - EPHEMERAL=true
+      - DISABLE_AUTO_UPDATE=true
+      # GitHub App authentication
+      - APP_ID=${GITHUB_APP_ID}
+      - APP_PRIVATE_KEY=${GITHUB_APP_PEM}
+      - APP_LOGIN=jellyrock
+      - RUNNER_SCOPE=repo
+      - REPO_URL=https://github.com/jellyrock/jellyrock
+      - LABELS=${RUNNER_LABELS:-self-hosted,roku,roku-device}
+      - TZ=${TIMEZONE:-America/New_York}
+      - RUN_AS_ROOT=true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=2g
+      - /home/runner:rw,noexec,nosuid,size=500m
+    volumes:
+      - runner-work:/_work
+    network_mode: service:iptables-sidecar
+    depends_on:
+      iptables-sidecar:
+        condition: service_started
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 3G
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -q '[R]unner.Listener' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  iptables-sidecar:
+    image: alpine:latest
+    container_name: roku-iptables
+    cap_add:
+      - NET_ADMIN
+    environment:
+      # Pass Roku device IP from .env (REQUIRED - no default)
+      - ROKU_DEVICE_IP=${ROKU_DEVICE_IP}
+    volumes:
+      - ./iptables-rules.sh:/usr/local/bin/iptables-rules.sh:ro
+    command: >
+      sh -c "
+        sh /usr/local/bin/iptables-rules.sh &&
+        echo 'IP filtering active. Monitoring...' &&
+        while true; do
+          sleep 3600
+        done
+      "
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  runner-work:
+    driver: local
+
+networks:
+  cicd-isolated:
+    name: cicd-isolated
+    driver: bridge
