@@ -56,7 +56,11 @@ mkdir -p "$INSTALL_DIR"
 echo "Copying files..."
 cp "$SCRIPT_DIR/docker-compose.yml" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/iptables-rules.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/mint-runner-token.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/runner-entrypoint.sh" "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/iptables-rules.sh"
+chmod +x "$INSTALL_DIR/mint-runner-token.sh"
+chmod +x "$INSTALL_DIR/runner-entrypoint.sh"
 
 # Check if .env exists
 if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -114,19 +118,31 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     if [ -z "$ROKU_DEVICE_IP" ] || [ "$ROKU_DEVICE_IP" = "YOUR_ROKU_IP_HERE" ]; then
         MISSING_VARS="$MISSING_VARS\n  - ROKU_DEVICE_IP"
     fi
-    if [ -z "$GITHUB_APP_ID" ] || [ "$GITHUB_APP_ID" = "YOUR_APP_ID_HERE" ]; then
-        MISSING_VARS="$MISSING_VARS\n  - GITHUB_APP_ID"
-    fi
-    if [ -z "$GITHUB_APP_PEM" ] || [ "$GITHUB_APP_PEM" = "YOUR_PRIVATE_KEY_CONTENT_HERE" ]; then
-        MISSING_VARS="$MISSING_VARS\n  - GITHUB_APP_PEM"
-    fi
-    
+
     if [ -n "$MISSING_VARS" ]; then
-        echo -e "${YELLOW}⚠ Missing required configuration:${NC}"
+        echo -e "${YELLOW}⚠ Missing required .env configuration:${NC}"
         echo -e "$MISSING_VARS"
         echo ""
         echo "Please edit $INSTALL_DIR/.env and set these values before starting."
     fi
+fi
+
+# Check that the GitHub App credentials are placed on the host (NOT in .env).
+# These are read by the registrar sidecar via a read-only bind mount.
+echo ""
+echo "Checking /etc/github-app/ ..."
+GH_APP_MISSING=""
+for f in key.pem app-id install-id repo-url; do
+    if [ ! -r "/etc/github-app/$f" ]; then
+        GH_APP_MISSING="$GH_APP_MISSING\n  - /etc/github-app/$f"
+    fi
+done
+if [ -n "$GH_APP_MISSING" ]; then
+    echo -e "${YELLOW}⚠ Missing GitHub App credential files:${NC}"
+    echo -e "$GH_APP_MISSING"
+    echo ""
+    echo "See README 'Place the App credentials on the host' for setup steps."
+    echo "All four files must exist with mode 0400 root:root before starting."
 fi
 
 # Summary
