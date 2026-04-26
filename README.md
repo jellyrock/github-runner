@@ -4,6 +4,7 @@ A production-ready GitHub Actions self-hosted runner for running Roku hardware t
 
 ## Features
 
+- **App-key isolation via sidecar registrar**: the GitHub App private key is mounted only into a one-shot registrar container that mints a short-lived runner registration token, then idles. The runner container has **no** App credentials in its env, so a malicious `pull_request_target` PR can't exfiltrate the key.
 - **Network Isolation**: Runner can only access GitHub (HTTPS), npm registries, and your specific Roku device
 - **Security Hardening**: Runs with dropped capabilities, no-new-privileges, and resource limits
 - **Ephemeral Mode**: Fresh container for every job execution
@@ -36,12 +37,11 @@ cp .env.example .env
    - **GitHub App name**: `jellyrock-runner` (or any unique name)
    - **Homepage URL**: `https://github.com/jellyrock`
    - **Webhook**: Disable (uncheck "Active")
-4. Set Permissions:
-   - **Actions**: Read & Write
-   - **Administration**: Read & Write
-   - **Contents**: Read & Write
-   - **Metadata**: Read-only
-   - **Pull requests**: Read & Write
+4. Set Permissions (minimum required for the sidecar registrar pattern):
+   - **Actions**: Read & Write — required to mint runner registration tokens
+   - **Metadata**: Read-only — auto-granted
+   - (Add `Contents: Read & Write` and/or `Pull requests: Read & Write` only if your App also does auto-commits or auto-PRs. The runner itself does **not** need them.)
+   - **Do NOT grant `Administration` or `Workflows: write`** — the runner registration flow doesn't need them, and they massively widen blast radius if the key leaks.
 5. Click **Create GitHub App**
 6. Scroll down to **Private keys** and click **Generate a private key**
 7. Save the downloaded `.pem` file securely
@@ -50,31 +50,49 @@ cp .env.example .env
 10. Note the **App ID** from the URL or app settings page
 11. Note the **Installation ID** from the URL after installing (format: `/installations/INSTALL_ID`)
 
-### 3. Configure Environment Variables
+### 3. Place the App credentials on the host (NOT in `.env`)
 
-Edit `.env` with your values:
+The App private key never lives in `.env` or in the runner container's env — only the registrar sidecar reads it, from a host path with `root:0400` perms.
 
 ```bash
-# Required: GitHub App credentials
-GITHUB_APP_ID=123456
-GITHUB_APP_INSTALL_ID=78901234
-GITHUB_APP_PEM="-----BEGIN RSA PRIVATE KEY-----
-MIIE... (your private key content) ...
------END RSA PRIVATE KEY-----"
+sudo mkdir -p /etc/github-app
+sudo chown root:root /etc/github-app
+sudo chmod 0700 /etc/github-app
 
+# Paste the private key downloaded in step 2:
+sudo tee /etc/github-app/key.pem < /path/to/your-app-private-key.pem
+sudo chmod 0400 /etc/github-app/key.pem
+
+# Numeric App ID (single line)
+echo "123456" | sudo tee /etc/github-app/app-id
+sudo chmod 0400 /etc/github-app/app-id
+
+# Numeric Installation ID (single line)
+echo "78901234" | sudo tee /etc/github-app/install-id
+sudo chmod 0400 /etc/github-app/install-id
+
+# "owner/repo" format
+echo "jellyrock/jellyrock" | sudo tee /etc/github-app/repo-url
+sudo chmod 0400 /etc/github-app/repo-url
+```
+
+### 4. Configure runner-specific environment variables
+
+Edit `.env` with the (non-secret) runner config:
+
+```bash
 # Required: Roku device IP (no default - must be set)
 ROKU_DEVICE_IP=192.168.1.200
 
 # Optional: Customize runner
 RUNNER_NAME=roku-runner-01
 RUNNER_LABELS=self-hosted,roku,roku-device
+TIMEZONE=America/New_York
 ```
 
-**Important**: 
-- `ROKU_DEVICE_IP` is **required** and has no default. The runner will fail to start without it.
-- For the private key, you can either paste it as a single line with `\n` characters, or keep it multi-line in the file
+`ROKU_DEVICE_IP` is **required**. None of the GitHub App credentials should ever be in `.env`.
 
-### 4. Install and Start
+### 5. Install and Start
 
 **Default installation (to `/opt/github-runner`):**
 ```bash
@@ -92,11 +110,11 @@ sudo systemctl enable --now github-runner
 ```
 
 The install script will:
-- Copy all necessary files to the specified directory
+- Copy all necessary files to the specified directory (including `mint-runner-token.sh` and `runner-entrypoint.sh`)
 - Create a systemd service with the correct working directory
 - Set up log rotation and health checks
 
-### 5. Verify Installation
+### 6. Verify Installation
 
 ```bash
 # Check service status
@@ -112,22 +130,26 @@ docker logs -f roku-runner
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Host System (Linux)                      │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │         Systemd: github-runner.service              │   │
-│  └──────────────────┬──────────────────────────────────┘   │
-│                     │                                       │
-│  ┌──────────────────▼──────────────────────────────────┐   │
-│  │              Docker Compose                         │   │
-│  │  ┌─────────────────┐  ┌──────────────────────┐     │   │
-│  │  │  roku-runner    │  │  iptables-sidecar    │     │   │
-│  │  │  (main runner)  │──│  (network filtering) │     │   │
-│  │  │  - 1 CPU        │  │  - NET_ADMIN cap     │     │   │
-│  │  │  - 3GB RAM      │  │  - blocks local LAN  │     │   │
-│  │  └─────────────────┘  └──────────────────────┘     │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                    Host System (Linux)                             │
+│                                                                    │
+│  /etc/github-app/         ← App key + IDs (root:0400, host-only)   │
+│       │                                                            │
+│       │ bind-mount RO                                              │
+│       ▼                                                            │
+│  ┌─────────────────────────┐                                       │
+│  │  roku-runner-registrar  │ mints registration token,             │
+│  │  (alpine, one-shot)     │ writes /shared/runner-token, idles    │
+│  └────────────┬────────────┘                                       │
+│               │ (shared volume)                                    │
+│               ▼                                                    │
+│  ┌────────────────────────┐  ┌──────────────────────┐              │
+│  │  roku-runner           │  │  iptables-sidecar    │              │
+│  │  (no App env vars)     │──│  (network filtering) │              │
+│  │  reads RUNNER_TOKEN    │  │  - NET_ADMIN cap     │              │
+│  │  from shared volume    │  │  - blocks local LAN  │              │
+│  └────────────────────────┘  └──────────────────────┘              │
+└────────────────────────────────────────────────────────────────────┘
                             │
             ┌───────────────┼───────────────┐
             │               │               │
@@ -136,6 +158,8 @@ docker logs -f roku-runner
      │  (HTTPS)    │ │  (HTTPS)    │ │  (.env IP)  │
      └─────────────┘ └─────────────┘ └─────────────┘
 ```
+
+**Key isolation property**: a malicious `pull_request_target` PR running inside `roku-runner` can read its own env, its filesystem, and the (already-consumed, ~1-hour-expiring) registration token in `/shared/runner-token`. It **cannot** reach `/etc/github-app/key.pem` — that path is only mounted into the registrar, which exits after writing the token.
 
 ## Security Model
 
@@ -159,13 +183,19 @@ docker logs -f roku-runner
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GITHUB_APP_ID` | Yes | - | GitHub App ID |
-| `GITHUB_APP_INSTALL_ID` | Yes | - | GitHub App Installation ID |
-| `GITHUB_APP_PEM` | Yes | - | GitHub App private key |
 | `ROKU_DEVICE_IP` | **Yes** | **None** | **IP address of Roku test device (REQUIRED)** |
 | `RUNNER_NAME` | No | `roku-runner-01` | Runner display name |
 | `RUNNER_LABELS` | No | `self-hosted,roku,roku-device` | Labels for job matching |
 | `TIMEZONE` | No | `America/New_York` | Container timezone |
+
+GitHub App credentials are **not** environment variables — they live as files in `/etc/github-app/` on the host (see step 3). The runner container has no access to them; only the registrar sidecar does.
+
+| Host file | Required | Description |
+|-----------|----------|-------------|
+| `/etc/github-app/key.pem` | Yes | App private key (RSA PEM), 0400 root:root |
+| `/etc/github-app/app-id` | Yes | Numeric App ID, single line |
+| `/etc/github-app/install-id` | Yes | Numeric Installation ID, single line |
+| `/etc/github-app/repo-url` | Yes | `owner/repo` (e.g. `jellyrock/jellyrock`) |
 
 ### Resource Limits
 
@@ -208,9 +238,10 @@ If the runner host fails:
 
 1. **Setup new hardware** with Docker installed
 2. **Clone this repository**: `git clone https://github.com/jellyrock/github-runner.git`
-3. **Copy `.env` file** from backup (contains your GitHub App credentials)
-4. **Run install.sh**: `sudo ./install.sh`
-5. **Start service**: `sudo systemctl enable --now github-runner`
+3. **Restore `/etc/github-app/`** from a secure backup (or re-create per step 3 of Quick Start using your existing App's `.pem` and IDs)
+4. **Restore `.env`** from backup (contains only Roku IP + runner labels — no secrets)
+5. **Run install.sh**: `sudo ./install.sh`
+6. **Start service**: `sudo systemctl enable --now github-runner`
 
 The runner will automatically register with GitHub using the same name.
 
