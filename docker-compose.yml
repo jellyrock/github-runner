@@ -1,16 +1,66 @@
 services:
+  # One-shot registrar: reads the App key (mounted RO from host /etc/github-app/),
+  # mints a short-lived runner registration token, writes it to a shared volume,
+  # and exits. The runner waits for this to complete before starting.
+  #
+  # Why this exists: pull_request_target workflows execute attacker-supplied PR
+  # code on the runner. Anything in the runner container's process env is
+  # reachable from there. By keeping the App key out of the runner's env (and
+  # only inside this short-lived sidecar that exits before any workflow runs),
+  # a compromised PR can never read it. See mint-runner-token.sh for details.
+  roku-runner-registrar:
+    image: alpine:latest
+    container_name: roku-runner-registrar
+    environment:
+      - TZ=${TIMEZONE:-America/New_York}
+    volumes:
+      - /etc/github-app:/run/secrets/github-app:ro
+      - registrar-shared:/shared
+      - ./mint-runner-token.sh:/usr/local/bin/mint-runner-token.sh:ro
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache --quiet curl openssl jq >/dev/null
+        exec /usr/local/bin/mint-runner-token.sh
+    # Stays running after writing the token (sleep infinity inside the script).
+    # See the comment in mint-runner-token.sh for why — TL;DR systemd uses
+    # --abort-on-container-exit, which would tear the project down if we exited.
+    # The runner gates its startup on this container's healthcheck below.
+    healthcheck:
+      test: ["CMD", "test", "-s", "/shared/runner-token"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 30s
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   roku-runner:
     image: myoung34/github-runner:latest
     container_name: roku-runner
+    depends_on:
+      roku-runner-registrar:
+        condition: service_healthy
+      iptables-sidecar:
+        condition: service_started
+    # See runner-entrypoint.sh — reads RUNNER_TOKEN from the shared volume
+    # written by the registrar, then execs upstream's /entrypoint.sh.
+    entrypoint: ["/usr/local/bin/runner-entrypoint.sh"]
+    # Compose's `entrypoint:` override CLEARS the image's default CMD, so we
+    # must explicitly restore it. Without this, upstream's /entrypoint.sh
+    # registers the runner, then runs `"$@"` (empty), and the container
+    # exits before reaching `Runner.Listener`. See:
+    # https://docs.docker.com/reference/compose-file/services/#entrypoint
+    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]
     environment:
-      # Runner configuration - uses RUNNER_NAME from .env or defaults to roku-runner-01
       - RUNNER_NAME=${RUNNER_NAME:-roku-runner-01}
       - EPHEMERAL=true
       - DISABLE_AUTO_UPDATE=true
-      # GitHub App authentication
-      - APP_ID=${GITHUB_APP_ID}
-      - APP_PRIVATE_KEY=${GITHUB_APP_PEM}
-      - APP_LOGIN=jellyrock
       - RUNNER_SCOPE=repo
       - REPO_URL=https://github.com/jellyrock/jellyrock
       - LABELS=${RUNNER_LABELS:-self-hosted,roku,roku-device}
@@ -30,16 +80,15 @@ services:
       - /tmp:rw,noexec,nosuid,size=2g
       - /home/runner:rw,noexec,nosuid,size=500m
     volumes:
+      - registrar-shared:/shared:ro
       - runner-work:/_work
+      - ./runner-entrypoint.sh:/usr/local/bin/runner-entrypoint.sh:ro
     network_mode: service:iptables-sidecar
-    depends_on:
-      iptables-sidecar:
-        condition: service_started
     restart: "no"
     deploy:
       resources:
         limits:
-          cpus: '1'
+          cpus: '2'
           memory: 3G
     healthcheck:
       test: ["CMD-SHELL", "ps aux | grep -q '[R]unner.Listener' || exit 1"]
@@ -59,7 +108,6 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      # Pass Roku device IP from .env (REQUIRED - no default)
       - ROKU_DEVICE_IP=${ROKU_DEVICE_IP}
     volumes:
       - ./iptables-rules.sh:/usr/local/bin/iptables-rules.sh:ro
@@ -71,7 +119,7 @@ services:
           sleep 3600
         done
       "
-    restart: unless-stopped
+    restart: "no"
     logging:
       driver: "json-file"
       options:
@@ -80,6 +128,8 @@ services:
 
 volumes:
   runner-work:
+    driver: local
+  registrar-shared:
     driver: local
 
 networks:
