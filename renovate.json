@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>jellyrock/.github//renovate/default"],
+  "packageRules": [
+    {
+      "description": "Pin Docker image digests so a stale :latest can't drift into a GitHub-deprecated runner binary. TODO: promote pinDigests for Docker into jellyrock/.github//renovate/default once validated here; current org default only pins github-actions digests.",
+      "matchManagers": ["docker-compose", "dockerfile"],
+      "pinDigests": true
+    },
+    {
+      "description": "myoung34/github-runner bundles the GitHub Actions runner binary, which GitHub deprecates every 1-3 months. Auto-merge digest bumps once CI passes — keeping current is what prevents the deprecation restart-loop.",
+      "matchPackageNames": ["myoung34/github-runner"],
+      "matchUpdateTypes": ["digest", "pin"],
+      "automerge": true,
+      "addLabels": ["runner-image"]
+    }
+  ]
+}

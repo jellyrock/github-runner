@@ -20,4 +20,20 @@ if [ -z "$RUNNER_TOKEN" ]; then
 fi
 
 export RUNNER_TOKEN
+
+# Optional liveness heartbeat to Healthchecks.io.
+# When HEALTHCHECKS_URL is set, ping <URL>/start at boot and <URL> every 60 s
+# while this container is alive. Configure the HC check with period=1m and
+# grace=5m so brief gaps between ephemeral job cycles don't false-alert.
+# The background subshell dies with PID 1 when /entrypoint.sh exits, so we
+# don't need explicit cleanup.
+if [ -n "${HEALTHCHECKS_URL:-}" ]; then
+  curl -fsS -m 10 -o /dev/null "$HEALTHCHECKS_URL/start" || true
+  (
+    while sleep 60; do
+      curl -fsS -m 10 -o /dev/null "$HEALTHCHECKS_URL" || true
+    done
+  ) &
+fi
+
 exec /entrypoint.sh "$@"
