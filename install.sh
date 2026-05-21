@@ -1,17 +1,43 @@
 #!/bin/bash
 # GitHub Actions Self-Hosted Runner Installation Script
-# Usage: sudo ./install.sh [INSTALL_DIRECTORY]
-# 
+# Usage: sudo ./install.sh [INSTALL_DIRECTORY] [--service-name NAME]
+#
 # Examples:
-#   sudo ./install.sh                          # Uses default: /opt/github-runner
-#   sudo ./install.sh /opt/github-runner       # Install to /opt/github-runner
+#   sudo ./install.sh                                                    # Default: /opt/github-runner + github-runner.service
+#   sudo ./install.sh /opt/github-runner                                 # Custom dir
+#   sudo ./install.sh /srv/compose/cicd \
+#       --service-name roku-runner                                       # Co-located deployment (a co-located host pattern)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Allow install directory to be passed as argument, default to /opt/github-runner
-INSTALL_DIR="${1:-/opt/github-runner}"
+INSTALL_DIR="/opt/github-runner"
+SERVICE_NAME="github-runner"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --service-name)
+            SERVICE_NAME="$2"
+            shift 2
+            ;;
+        --service-name=*)
+            SERVICE_NAME="${1#--service-name=}"
+            shift
+            ;;
+        -h|--help)
+            sed -n '2,8p' "$0"
+            exit 0
+            ;;
+        -*)
+            echo "Error: unknown flag '$1'" >&2
+            exit 2
+            ;;
+        *)
+            INSTALL_DIR="$1"
+            shift
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -81,18 +107,26 @@ echo ""
 echo "Installing systemd service..."
 
 # Create systemd service file with the correct WorkingDirectory
-SYSTEMD_SERVICE="/etc/systemd/system/github-runner.service"
+SYSTEMD_SERVICE="/etc/systemd/system/${SERVICE_NAME}.service"
+PROJECT_NAME="$SERVICE_NAME"
 cat > "$SYSTEMD_SERVICE" << EOF
 [Unit]
 Description=GitHub Actions Self-Hosted Runner for Roku Tests
 After=docker.service
 Requires=docker.service
+# Bound the restart loop. Without this, a deprecated runner binary (or any
+# fast-failing root cause) generates thousands of restarts/day until manual
+# intervention. 5 failures in 5 min → unit enters failed state; a missed
+# HEALTHCHECKS_URL ping then alerts via Healthchecks.io.
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml up --abort-on-container-exit --force-recreate
-ExecStop=/usr/bin/docker compose -f docker-compose.yml down
+ExecStartPre=/usr/bin/docker compose --env-file .env -f docker-compose.yml --project-name $PROJECT_NAME down --remove-orphans
+ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml --project-name $PROJECT_NAME up --abort-on-container-exit --force-recreate --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file .env -f docker-compose.yml --project-name $PROJECT_NAME down --remove-orphans
 Restart=always
 RestartSec=5
 User=root
@@ -152,29 +186,29 @@ echo "Installation Complete!"
 echo "=========================================="
 echo ""
 echo "Installation directory: $INSTALL_DIR"
-echo "Systemd service: github-runner.service"
+echo "Systemd service: ${SERVICE_NAME}.service"
 echo ""
 
 if [ ! -f "$SCRIPT_DIR/.env" ] && [ ! -f "$INSTALL_DIR/.env" ]; then
     echo -e "${YELLOW}NEXT STEPS:${NC}"
-    echo "1. Edit $INSTALL_DIR/.env with your credentials:"
-    echo "   - GITHUB_APP_ID"
-    echo "   - GITHUB_APP_INSTALL_ID"
-    echo "   - GITHUB_APP_PEM"
-    echo "   - ROKU_DEVICE_IP"
+    echo "1. Place GitHub App credentials in /etc/github-app/ (see README step 3)"
     echo ""
-    echo "2. Start the runner:"
-    echo "   sudo systemctl enable --now github-runner"
+    echo "2. Edit $INSTALL_DIR/.env with the (non-secret) runner config:"
+    echo "   - ROKU_DEVICE_IP   (required)"
+    echo "   - HEALTHCHECKS_URL (optional, for offline alerting)"
     echo ""
-    echo "3. Check status:"
-    echo "   sudo systemctl status github-runner"
+    echo "3. Start the runner:"
+    echo "   sudo systemctl enable --now ${SERVICE_NAME}"
+    echo ""
+    echo "4. Check status:"
+    echo "   sudo systemctl status ${SERVICE_NAME}"
     echo "   docker logs -f roku-runner"
 else
     echo -e "${GREEN}You can start the runner now:${NC}"
-    echo "   sudo systemctl enable --now github-runner"
+    echo "   sudo systemctl enable --now ${SERVICE_NAME}"
     echo ""
     echo "Check status:"
-    echo "   sudo systemctl status github-runner"
+    echo "   sudo systemctl status ${SERVICE_NAME}"
     echo "   docker logs -f roku-runner"
 fi
 
@@ -183,8 +217,8 @@ echo "To view logs:"
 echo "   docker logs -f roku-runner"
 echo ""
 echo "To stop:"
-echo "   sudo systemctl stop github-runner"
+echo "   sudo systemctl stop ${SERVICE_NAME}"
 echo ""
-echo "To reinstall to a different location:"
-echo "   sudo ./install.sh /path/to/new/location"
+echo "To reinstall to a different location or service name:"
+echo "   sudo ./install.sh /path/to/new/location --service-name custom-name"
 echo ""

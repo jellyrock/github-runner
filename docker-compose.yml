@@ -41,7 +41,11 @@ services:
         max-file: "2"
 
   roku-runner:
-    image: myoung34/github-runner:latest
+    # Pinned to a digest, not :latest. GitHub deprecates older runner binaries
+    # periodically (~every 1-3 months); a stale local image then hits
+    # "Runner version X is deprecated and cannot receive messages" and enters a
+    # restart loop. Renovate bumps this digest via PR — see renovate.json.
+    image: myoung34/github-runner@sha256:f467e6fe4f0ca1e54904ed437c61de21c3d13de32f4d1bb8be32c48892bead3c
     container_name: roku-runner
     depends_on:
       roku-runner-registrar:
@@ -66,6 +70,9 @@ services:
       - LABELS=${RUNNER_LABELS:-self-hosted,roku,roku-device}
       - TZ=${TIMEZONE:-America/New_York}
       - RUN_AS_ROOT=true
+      # Optional Healthchecks.io push URL — runner-entrypoint.sh pings on
+      # boot and every 60s. Unset = heartbeat disabled (no-op).
+      - HEALTHCHECKS_URL=${HEALTHCHECKS_URL:-}
     security_opt:
       - no-new-privileges:true
     cap_drop:
