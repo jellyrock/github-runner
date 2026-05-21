@@ -1,0 +1,6 @@
+{
+  "// files.associations": "Stop the markdownlint extension from flagging dotfiles whose first line starts with '#'. None of these are markdown.",
+  "files.associations": {
+    ".env.example": "properties"
+  }
+}
