@@ -2,12 +2,19 @@
 Description=GitHub Actions Self-Hosted Runner for Roku Tests
 After=docker.service
 Requires=docker.service
+# Bound the restart loop. Without this, a deprecated runner binary (or any
+# fast-failing root cause) generates thousands of restarts/day until manual
+# intervention. 5 failures in 5 min → unit enters failed state and stops
+# retrying; a HEALTHCHECKS_URL ping miss alerts via Healthchecks.io.
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/github-runner
-ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml up --abort-on-container-exit --force-recreate
-ExecStop=/usr/bin/docker compose -f docker-compose.yml down
+ExecStartPre=/usr/bin/docker compose --env-file .env -f docker-compose.yml down --remove-orphans
+ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml up --abort-on-container-exit --force-recreate --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file .env -f docker-compose.yml down --remove-orphans
 Restart=always
 RestartSec=5
 User=root

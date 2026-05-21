@@ -224,13 +224,23 @@ docker logs -f roku-runner
 
 ### Update
 
-```bash
-# Pull latest runner image
-docker pull myoung34/github-runner:latest
+The runner image is **pinned to a digest** (not `:latest`) and bumped by
+Renovate. To update:
 
-# Restart service
-sudo systemctl restart github-runner
-```
+1. Wait for the Renovate PR (titled `chore(deps): pin myoung34/github-runner …`)
+2. Review and merge
+3. Pull the new digest on the host and restart:
+
+   ```bash
+   cd /opt/github-runner   # or your INSTALL_DIR
+   sudo docker compose pull
+   sudo systemctl restart github-runner
+   ```
+
+The `chore(deps)` digest PRs are auto-merged on green CI (see `renovate.json`).
+For emergency updates outside the Renovate cadence (e.g. GitHub deprecates a
+runner version sooner than expected), edit the digest in `docker-compose.yml`
+directly and run the same `compose pull` + `systemctl restart` cycle.
 
 ### Disaster Recovery
 
@@ -239,30 +249,81 @@ If the runner host fails:
 1. **Setup new hardware** with Docker installed
 2. **Clone this repository**: `git clone https://github.com/jellyrock/github-runner.git`
 3. **Restore `/etc/github-app/`** from a secure backup (or re-create per step 3 of Quick Start using your existing App's `.pem` and IDs)
-4. **Restore `.env`** from backup (contains only Roku IP + runner labels — no secrets)
-5. **Run install.sh**: `sudo ./install.sh`
-6. **Start service**: `sudo systemctl enable --now github-runner`
+4. **Restore `.env`** from backup (contains only Roku IP + runner labels + optional `HEALTHCHECKS_URL` — no secrets)
+5. **Run install.sh**: `sudo ./install.sh` (add `--service-name` if not using the default)
+6. **Start service**: `sudo systemctl enable --now github-runner` (or your chosen service name)
 
 The runner will automatically register with GitHub using the same name.
 
+## Monitoring
+
+The runner has three layers of failure detection, each catching a different class of problem:
+
+| Layer | Catches | Configured by |
+| --- | --- | --- |
+| Docker healthcheck (`ps aux \| grep Runner.Listener`) | Container alive but listener process dead | `docker-compose.yml` (always on) |
+| systemd `StartLimitBurst=5/300s` | Repeated container crashes (deprecated binary, bad config) | Unit file emitted by `install.sh` |
+| Healthchecks.io push heartbeat | "Runner offline" from GitHub's perspective — covers all of the above plus host-level issues (kernel panic, docker dead, network down) | `HEALTHCHECKS_URL` in `.env` |
+
+### Setting up the Healthchecks.io heartbeat
+
+1. Create a check at <https://healthchecks.io/> (or your self-hosted HC instance)
+2. Configure: **period** = `1 minute`, **grace** = `5 minutes`. The grace covers brief gaps between ephemeral job cycles.
+3. Add HC's **Gotify** (or email, Slack, etc.) integration to the check
+4. Copy the check's ping URL into `.env`:
+
+   ```bash
+   HEALTHCHECKS_URL=https://hc-ping.com/<your-check-uuid>
+   ```
+
+5. `sudo systemctl restart <service-name>` to pick up the change
+
+The runner pings `<URL>/start` at container boot and `<URL>` every 60 s while it's alive. A deprecated runner that crashes within 10 s of startup never gets to the periodic ping, so HC.io alerts after the 5-min grace.
+
 ## Troubleshooting
+
+### Runner crash-loops with "Runner version X.Y.Z is deprecated and cannot receive messages"
+
+**Cause:** GitHub deprecates older runner binaries every 1–3 months. The `myoung34/github-runner` image bundles a specific binary version — once GitHub deprecates it, the runner fails immediately on every start.
+
+**Fix:**
+
+```bash
+cd /opt/github-runner   # or your INSTALL_DIR
+sudo docker compose pull
+sudo systemctl reset-failed <service-name>   # clear StartLimitBurst counter
+sudo systemctl restart <service-name>
+docker logs roku-runner | grep "Current runner version"
+```
+
+**Prevention:** the image is digest-pinned and Renovate raises PRs that auto-merge on green CI (see `renovate.json`). Make sure the Renovate GitHub App is installed on this repository and that CI is green for digest PRs.
 
 ### Runner shows as offline
 
 ```bash
 # Check service status
-sudo systemctl status github-runner
+sudo systemctl status <service-name>
 
-# View logs
-docker logs roku-runner
+# Watch the live runner output
+docker logs -f roku-runner
 
-# Check GitHub API response
-docker exec roku-runner curl -s https://api.github.com
+# Confirm registration token was minted
+docker logs roku-runner-registrar | tail
+```
+
+### systemd unit in `failed` state (StartLimitBurst exhausted)
+
+The unit gives up after 5 failed starts in 5 minutes to avoid the multi-thousand-restart pathology. To clear it after fixing the underlying cause:
+
+```bash
+sudo systemctl reset-failed <service-name>
+sudo systemctl start <service-name>
 ```
 
 ### Job fails during npm install
 
-The runner needs HTTPS access to npm registry. Check iptables:
+The runner needs HTTPS access to the npm registry. Check iptables:
+
 ```bash
 docker exec roku-iptables iptables -L OUTPUT -n | grep 443
 ```
@@ -270,6 +331,7 @@ docker exec roku-iptables iptables -L OUTPUT -n | grep 443
 ### Cannot connect to Roku device
 
 Verify the IP in `.env`:
+
 ```bash
 # From the runner container
 docker exec roku-runner ping $ROKU_DEVICE_IP
@@ -278,6 +340,18 @@ docker exec roku-runner ping $ROKU_DEVICE_IP
 ### Permission denied errors
 
 The runner uses root user by design (required by myoung34 image). This is normal.
+
+## Co-located deployment (e.g. BATCAVE)
+
+`install.sh` defaults to `/opt/github-runner` + `github-runner.service`, which assumes a standalone host. If you're co-locating the runner with other Compose projects (BATCAVE's `/home/alfred/docker/compose/cicd/` is the production example), use `--service-name` so the systemd unit name doesn't collide with any host-wide `github-runner` convention:
+
+```bash
+sudo ./install.sh /home/alfred/docker/compose/cicd --service-name roku-runner
+```
+
+This emits `/etc/systemd/system/roku-runner.service` with `--project-name roku-runner` baked into every `docker compose` invocation. That gives the runner its own Compose project namespace, fully isolated from any sibling project that might do `docker compose up --remove-orphans` in a parent directory.
+
+**Sibling-project safety:** if a peer script does bulk `compose up --remove-orphans` from a parent directory (the BATCAVE `start-docker-containers.sh` pattern), make sure it explicitly **excludes** the runner's compose file — e.g. `grep -v '^./cicd/'`. The `--project-name` isolation means `--remove-orphans` can't reach across projects, but it's still safest to exclude the file entirely so the runner is never (re)started outside its systemd unit.
 
 ## Development
 
