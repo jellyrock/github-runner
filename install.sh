@@ -5,8 +5,8 @@
 # Examples:
 #   sudo ./install.sh                                                    # Default: /opt/github-runner + github-runner.service
 #   sudo ./install.sh /opt/github-runner                                 # Custom dir
-#   sudo ./install.sh /home/alfred/docker/compose/cicd \
-#       --service-name roku-runner                                       # Co-located deployment (BATCAVE pattern)
+#   sudo ./install.sh /srv/compose/cicd \
+#       --service-name roku-runner                                       # Co-located deployment
 
 set -e
 

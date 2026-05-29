@@ -19,6 +19,22 @@ A production-ready GitHub Actions self-hosted runner for running Roku hardware t
 - Roku device on the same network for testing
 - Minimum specs: 1 CPU, 3GB RAM
 
+## Canonical source — do not fork these files
+
+This repository is the **single source of truth** for the Roku runner. The
+`docker-compose.yml` image digests (both `alpine` and `myoung34/github-runner`)
+are pinned here and kept current by Renovate — and that pinning is
+**load-bearing**: an un-bumped runner binary crash-loops once GitHub deprecates
+it (see Troubleshooting).
+
+**Do not copy these files into a host repo and commit them.** A committed copy
+silently drifts from this source — the digests fall behind Renovate's bumps and
+the pins rot. (Observed in practice: a downstream copy ran unpinned
+`alpine:latest` and a stale runner digest while this repo's Renovate PRs sailed
+past it, unused.) Hosts must instead **consume this repo at a pinned ref** and
+treat the installed files as a generated artifact — see
+[Consuming this repo on a host](#consuming-this-repo-on-a-host).
+
 ## Quick Start
 
 ### 1. Clone and Configure
@@ -341,17 +357,41 @@ docker exec roku-runner ping $ROKU_DEVICE_IP
 
 The runner uses root user by design (required by myoung34 image). This is normal.
 
-## Co-located deployment (e.g. BATCAVE)
+## Consuming this repo on a host
 
-`install.sh` defaults to `/opt/github-runner` + `github-runner.service`, which assumes a standalone host. If you're co-locating the runner with other Compose projects (BATCAVE's `/home/alfred/docker/compose/cicd/` is the production example), use `--service-name` so the systemd unit name doesn't collide with any host-wide `github-runner` convention:
+A host must consume this repo **as the source**, not vendor a hand-edited copy.
+The drift this prevents is concrete: the digest pins above only protect the
+host if the host actually tracks *this* file.
 
-```bash
-sudo ./install.sh /home/alfred/docker/compose/cicd --service-name roku-runner
-```
+1. **Pin a ref.** Track a specific tag or commit of this repo on the host — not
+   a floating copy of `main`. Updates then become deliberate and reviewable
+   (and Renovate can bump the pinned ref like any other dependency).
+2. **Install from the pinned ref**, co-locating with other Compose projects via
+   `--service-name` so the systemd unit name can't collide with a host-wide
+   `github-runner` convention (example install dir `/srv/compose/cicd`):
 
-This emits `/etc/systemd/system/roku-runner.service` with `--project-name roku-runner` baked into every `docker compose` invocation. That gives the runner its own Compose project namespace, fully isolated from any sibling project that might do `docker compose up --remove-orphans` in a parent directory.
+   ```bash
+   sudo ./install.sh /srv/compose/cicd --service-name roku-runner
+   ```
 
-**Sibling-project safety:** if a peer script does bulk `compose up --remove-orphans` from a parent directory (the BATCAVE `start-docker-containers.sh` pattern), make sure it explicitly **excludes** the runner's compose file — e.g. `grep -v '^./cicd/'`. The `--project-name` isolation means `--remove-orphans` can't reach across projects, but it's still safest to exclude the file entirely so the runner is never (re)started outside its systemd unit.
+   This emits `/etc/systemd/system/roku-runner.service` with
+   `--project-name roku-runner` baked into every `docker compose` invocation —
+   its own Compose project namespace, fully isolated from any sibling project
+   that might do `docker compose up --remove-orphans` in a parent directory.
+3. **Treat the installed files as a generated artifact.** `.gitignore` them in
+   the host repo (or vendor them under a clearly-marked, sync-only path). **Never
+   hand-edit the image digests in the host copy** — that is exactly the drift
+   this contract exists to prevent.
+4. **Re-sync on Renovate bumps.** When a `chore(deps)` digest PR merges *here*,
+   re-install (or re-pull the pinned ref) on the host and restart the unit, so
+   the bump actually reaches the running container:
+
+   ```bash
+   sudo ./install.sh /srv/compose/cicd --service-name roku-runner
+   sudo docker compose -p roku-runner pull && sudo systemctl restart roku-runner
+   ```
+
+**Sibling-project safety:** if a peer script does bulk `compose up --remove-orphans` from a parent directory, make sure it explicitly **excludes** the runner's compose file — e.g. `grep -v '^./cicd/'`. The `--project-name` isolation means `--remove-orphans` can't reach across projects, but it's still safest to exclude the file entirely so the runner is never (re)started outside its systemd unit.
 
 ## Development
 
