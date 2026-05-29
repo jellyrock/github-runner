@@ -125,6 +125,17 @@ sudo ./install.sh /var/lib/github-runner
 sudo systemctl enable --now github-runner
 ```
 
+**Run the unit as a non-root user:**
+```bash
+# The unit runs `docker compose` as this user instead of root. The user must
+# exist and be in the `docker` group; install.sh chowns the install dir to it.
+sudo ./install.sh /opt/github-runner --service-user ci
+```
+
+`--service-user` defaults to `root`. Running as a docker-group user keeps the unit's
+host process off uid 0 — the container hardening is unchanged (it lives in the compose
+file). Combine with `--service-name` as needed.
+
 The install script will:
 - Copy all necessary files to the specified directory (including `mint-runner-token.sh` and `runner-entrypoint.sh`)
 - Create a systemd service with the correct working directory
@@ -378,6 +389,8 @@ host if the host actually tracks *this* file.
    `--project-name roku-runner` baked into every `docker compose` invocation —
    its own Compose project namespace, fully isolated from any sibling project
    that might do `docker compose up --remove-orphans` in a parent directory.
+   Add `--service-user <user>` to run that unit as a non-root docker-group user
+   instead of root.
 3. **Treat the installed files as a generated artifact.** `.gitignore` them in
    the host repo (or vendor them under a clearly-marked, sync-only path). **Never
    hand-edit the image digests in the host copy** — that is exactly the drift
