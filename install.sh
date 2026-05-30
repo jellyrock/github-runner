@@ -1,12 +1,15 @@
 #!/bin/bash
 # GitHub Actions Self-Hosted Runner Installation Script
-# Usage: sudo ./install.sh [INSTALL_DIRECTORY] [--service-name NAME]
+# Usage: sudo ./install.sh [INSTALL_DIRECTORY] [--service-name NAME] [--service-user USER]
 #
 # Examples:
-#   sudo ./install.sh                                                    # Default: /opt/github-runner + github-runner.service
-#   sudo ./install.sh /opt/github-runner                                 # Custom dir
-#   sudo ./install.sh /srv/compose/cicd \
-#       --service-name roku-runner                                       # Co-located deployment
+#   sudo ./install.sh                                              # Default: /opt/github-runner + github-runner.service
+#   sudo ./install.sh /opt/github-runner                           # Custom dir
+#   sudo ./install.sh /srv/compose/cicd --service-name roku-runner # Co-located deployment
+#   sudo ./install.sh /opt/github-runner --service-user ci         # Run the unit as a non-root user (must be in the docker group)
+#
+# --service-name defaults to github-runner (also baked into docker compose --project-name).
+# --service-user defaults to root; set a docker-group user to run the unit as non-root.
 
 set -e
 
@@ -14,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INSTALL_DIR="/opt/github-runner"
 SERVICE_NAME="github-runner"
+SERVICE_USER="root"
 while [ $# -gt 0 ]; do
     case "$1" in
         --service-name)
@@ -24,8 +28,16 @@ while [ $# -gt 0 ]; do
             SERVICE_NAME="${1#--service-name=}"
             shift
             ;;
+        --service-user)
+            SERVICE_USER="$2"
+            shift 2
+            ;;
+        --service-user=*)
+            SERVICE_USER="${1#--service-user=}"
+            shift
+            ;;
         -h|--help)
-            sed -n '2,8p' "$0"
+            sed -n '2,12p' "$0"
             exit 0
             ;;
         -*)
@@ -72,7 +84,21 @@ fi
 echo -e "${GREEN}✓ Docker and Docker Compose are installed${NC}"
 echo ""
 echo "Installation directory: $INSTALL_DIR"
+echo "Service user: $SERVICE_USER"
 echo ""
+
+# If the unit will run as a non-root user, it must exist and be able to reach the
+# Docker socket (be in the `docker` group). Validate early so we fail fast.
+if [ "$SERVICE_USER" != "root" ]; then
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        echo -e "${RED}Error: --service-user '$SERVICE_USER' does not exist${NC}"
+        exit 1
+    fi
+    if ! id -nG "$SERVICE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+        echo -e "${YELLOW}⚠ '$SERVICE_USER' is not in the 'docker' group — the unit may fail to reach the Docker socket.${NC}"
+        echo -e "${YELLOW}  Add it with: sudo usermod -aG docker $SERVICE_USER${NC}"
+    fi
+fi
 
 # Create installation directory
 echo "Creating installation directory..."
@@ -102,6 +128,13 @@ else
     echo -e "${GREEN}✓ Existing .env file preserved${NC}"
 fi
 
+# When the unit runs as a non-root user, that user must be able to read the compose
+# file + .env (docker compose reads them on the host) and own runtime state. Hand the
+# install dir to it. No-op for the default root.
+if [ "$SERVICE_USER" != "root" ]; then
+    chown -R "$SERVICE_USER" "$INSTALL_DIR"
+fi
+
 # Install systemd service with correct WorkingDirectory
 echo ""
 echo "Installing systemd service..."
@@ -129,7 +162,7 @@ ExecStart=/usr/bin/docker compose --env-file .env -f docker-compose.yml --projec
 ExecStop=/usr/bin/docker compose --env-file .env -f docker-compose.yml --project-name $PROJECT_NAME down --remove-orphans
 Restart=always
 RestartSec=5
-User=root
+User=$SERVICE_USER
 
 [Install]
 WantedBy=multi-user.target
@@ -187,6 +220,7 @@ echo "=========================================="
 echo ""
 echo "Installation directory: $INSTALL_DIR"
 echo "Systemd service: ${SERVICE_NAME}.service"
+echo "Service user: $SERVICE_USER"
 echo ""
 
 if [ ! -f "$SCRIPT_DIR/.env" ] && [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -219,6 +253,6 @@ echo ""
 echo "To stop:"
 echo "   sudo systemctl stop ${SERVICE_NAME}"
 echo ""
-echo "To reinstall to a different location or service name:"
-echo "   sudo ./install.sh /path/to/new/location --service-name custom-name"
+echo "To reinstall to a different location, service name, or service user:"
+echo "   sudo ./install.sh /path/to/new/location --service-name custom-name [--service-user USER]"
 echo ""
