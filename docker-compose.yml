@@ -21,8 +21,16 @@ services:
       - sh
       - -c
       - |
+        rm -f /shared/runner-token
         apk add --no-cache --quiet curl openssl jq >/dev/null
         exec /usr/local/bin/mint-runner-token.sh
+    # The `rm` above is load-bearing. registrar-shared is a PERSISTENT named
+    # volume, so a token from a prior cycle survives a restart. The runner gates
+    # only on `test -s /shared/runner-token` (presence, not freshness), so a
+    # leftover token lets the runner start and register with a dead token → 404,
+    # which crash-loops the whole project until StartLimitBurst parks the unit.
+    # Deleting the token BEFORE the slow `apk add` means the runner's healthcheck
+    # correctly waits for a freshly minted token instead of racing a stale one.
     # Stays running after writing the token (sleep infinity inside the script).
     # See the comment in mint-runner-token.sh for why — TL;DR systemd uses
     # --abort-on-container-exit, which would tear the project down if we exited.
