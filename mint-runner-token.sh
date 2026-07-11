@@ -31,6 +31,15 @@ INSTALL_ID_FILE="/run/secrets/github-app/install-id"
 REPO_FILE="/run/secrets/github-app/repo-url"
 OUT="/shared/runner-token"
 
+# Defense-in-depth against a stale token in the PERSISTENT registrar-shared
+# volume: clear any token from a prior cycle before we do anything that could
+# fail (missing secrets, API errors). The runner gates only on the token's
+# presence, so a leftover token would let it start and register with a dead
+# token → 404 crash-loop. The compose `command` also rm's this before the slow
+# `apk add`; this is the belt to that suspenders in case the script is invoked
+# some other way.
+rm -f "$OUT"
+
 for f in "$KEY" "$APP_ID_FILE" "$INSTALL_ID_FILE" "$REPO_FILE"; do
   [ -r "$f" ] || { echo "registrar: missing or unreadable: $f" >&2; exit 2; }
 done
