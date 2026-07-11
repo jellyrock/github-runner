@@ -295,7 +295,7 @@ The runner has three layers of failure detection, each catching a different clas
 ### Setting up the Healthchecks.io heartbeat
 
 1. Create a check at <https://healthchecks.io/> (or your self-hosted HC instance)
-2. Configure: **period** = `1 minute`, **grace** = `5 minutes`. The grace covers brief gaps between ephemeral job cycles.
+2. Configure: **period** = `1 minute`, **grace** = `20 minutes`. The runner is ephemeral — the container restarts between every job — so the heartbeat has a gap on each cycle. A generous grace keeps those normal restart gaps (and brief self-recovering hiccups) from false-alerting, so a DOWN means a *sustained* outage worth paging on. (A too-tight grace causes alert fatigue: this check flipped 20× in 50 days on `grace=5m`, mostly self-recovered blips, which trained the alert to be ignored right before a real 18h outage.)
 3. Add HC's **Gotify** (or email, Slack, etc.) integration to the check
 4. Copy the check's ping URL into `.env`:
 
@@ -305,7 +305,7 @@ The runner has three layers of failure detection, each catching a different clas
 
 5. `sudo systemctl restart <service-name>` to pick up the change
 
-The runner pings `<URL>/start` at container boot and `<URL>` every 60 s while it's alive. A deprecated runner that crashes within 10 s of startup never gets to the periodic ping, so HC.io alerts after the 5-min grace.
+The runner pings `<URL>` every 60 s while it's alive. A runner that crashes within seconds of startup (deprecated binary, bad config, missing token) never gets to the periodic ping, so once the gap exceeds period + grace HC.io alerts. It does **not** ping `<URL>/start`: the container is ephemeral and dies before a run "completes", so a start signal never gets a matching success — it only adds noise.
 
 ## Troubleshooting
 
