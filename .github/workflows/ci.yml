@@ -55,3 +55,26 @@ jobs:
         run: bash -n install.sh
       - name: install.sh --help exits 0
         run: bash install.sh --help
+
+  # Actually pull and exercise the pinned runner image. Renovate can no longer
+  # soak myoung34/github-runner digests (upstream rebuilds :latest faster than
+  # the soak window, so the clock resets forever — see renovate.json). With the
+  # soak dropped, THIS job is the real gate on digest automerge: a broken or
+  # GitHub-deprecated runner binary would pass `docker compose config` (YAML
+  # only) but fail here. ~1GB pull, runs concurrently with the other jobs.
+  runner-image-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Runner binary is present and self-reports a version
+        run: |
+          IMG=$(grep -oP 'myoung34/github-runner@sha256:[a-f0-9]+' docker-compose.yml)
+          echo "Testing $IMG"
+          docker pull "$IMG"
+          # config.sh refuses to run as root, so exercise the listener directly.
+          # A semver version proves the runner binary loaded and isn't a broken
+          # image — the deprecation-relevant signal a digest rebuild can break.
+          VERSION=$(docker run --rm \
+            --entrypoint /actions-runner/bin/Runner.Listener "$IMG" --version)
+          echo "Runner version: $VERSION"
+          echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
