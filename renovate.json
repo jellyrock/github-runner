@@ -8,9 +8,11 @@
       "pinDigests": true
     },
     {
-      "description": "myoung34/github-runner bundles the GitHub Actions runner binary, which GitHub deprecates every 1-3 months. Auto-merge digest bumps once CI passes — keeping current is what prevents the deprecation restart-loop.",
+      "description": "myoung34/github-runner bundles the GitHub Actions runner binary, which GitHub deprecates every 1-3 months; staying current prevents the deprecation restart-loop. Upstream rebuilds :latest more often than the org default's 2-day digest soak, so minimumReleaseAge NEVER resolves — Renovate re-targets the newer digest each run and resets the clock, so the bump never automerges. A soak is meaningless for a continuously-rebuilt rolling tag anyway (there's no discrete release to age), so we drop it (minimumReleaseAge:0) and instead gate automerge on the runner-image-smoke CI job, which actually pulls and runs the image. A weekly schedule rate-limits the churn to one digest/week (the runner self-updates its binary at container start, so weekly currency is ample).",
       "matchPackageNames": ["myoung34/github-runner"],
       "matchUpdateTypes": ["digest", "pin"],
+      "minimumReleaseAge": "0",
+      "schedule": ["before 4am on monday"],
       "automerge": true,
       "addLabels": ["runner-image"]
     }
