@@ -56,6 +56,53 @@ esac
 NOW=$(date +%s)
 EXP=$((NOW + 540))   # 9 min; GitHub max is 10
 
+# POST to a GitHub API endpoint, tolerating transient failures.
+#
+# Why this exists: GitHub's API returns routine, short-lived 5xx/429s, and a
+# single one used to be fatal. The old `curl -fsS ... | jq` piped an empty body
+# into jq on any HTTP error, so the registrar died with an opaque `jq` exit 4;
+# the runner then never started and systemd's StartLimitBurst parked the whole
+# unit until a human intervened. A momentary blip became a multi-hour outage.
+#
+# So: retry on network errors and HTTP 429/5xx with backoff, fail fast on a
+# genuine 4xx (bad creds / permissions — retrying won't help), and log the real
+# HTTP status either way. Retry budget (~21s of sleeps) stays well under the
+# registrar healthcheck's ~90s window so a slow mint can't be marked unhealthy.
+#
+# Args: <label> <auth-header-value> <url>
+# Echoes the response body on HTTP 2xx; returns non-zero otherwise.
+gh_post() {
+  label="$1"; auth="$2"; url="$3"
+  attempt=1; max=4
+  while :; do
+    resp=$(curl -sS -m 15 -w '\n%{http_code}' -X POST \
+      -H "Authorization: $auth" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$url" 2>/dev/null) && rc=0 || rc=$?
+    code=$(printf '%s' "$resp" | tail -n1)
+    body=$(printf '%s' "$resp" | sed '$d')
+    [ "$rc" -eq 0 ] || code="000"   # curl-level failure (timeout/DNS/reset)
+    case "$code" in
+      2*)
+        printf '%s' "$body"
+        return 0 ;;
+      000|429|5*)
+        if [ "$attempt" -ge "$max" ]; then
+          echo "registrar: $label failed after $max attempts (last: HTTP $code)" >&2
+          return 1
+        fi
+        delay=$((attempt * 3))   # 3s, 6s, 9s
+        echo "registrar: $label transient HTTP $code — retry $attempt/$((max - 1)) in ${delay}s" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1)) ;;
+      *)
+        echo "registrar: $label non-retryable HTTP $code" >&2
+        return 1 ;;
+    esac
+  done
+}
+
 b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
 HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$NOW" "$EXP" "$APP_ID" | b64url)
@@ -64,19 +111,15 @@ SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" \
         | b64url)
 JWT="$HEADER.$PAYLOAD.$SIG"
 
-INSTALL_TOKEN=$(curl -fsS -X POST \
-  -H "Authorization: Bearer $JWT" \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28" \
-  "https://api.github.com/app/installations/${INSTALL_ID}/access_tokens" \
-  | jq -re '.token')
+INSTALL_RESP=$(gh_post "installation access token" "Bearer $JWT" \
+  "https://api.github.com/app/installations/${INSTALL_ID}/access_tokens") \
+  || { echo "registrar: could not obtain installation access token" >&2; exit 1; }
+INSTALL_TOKEN=$(printf '%s' "$INSTALL_RESP" | jq -re '.token')
 
-REG_TOKEN=$(curl -fsS -X POST \
-  -H "Authorization: token $INSTALL_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28" \
-  "https://api.github.com/repos/${REPO}/actions/runners/registration-token" \
-  | jq -re '.token')
+REG_RESP=$(gh_post "registration token" "token $INSTALL_TOKEN" \
+  "https://api.github.com/repos/${REPO}/actions/runners/registration-token") \
+  || { echo "registrar: could not obtain runner registration token" >&2; exit 1; }
+REG_TOKEN=$(printf '%s' "$REG_RESP" | jq -re '.token')
 
 [ -n "$REG_TOKEN" ] || { echo "registrar: empty registration token" >&2; exit 1; }
 
