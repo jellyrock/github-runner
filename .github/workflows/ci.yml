@@ -27,7 +27,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: ShellCheck (error severity)
         run: |
           shellcheck --severity=error \
@@ -39,7 +39,7 @@ jobs:
   compose-config:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Stub .env (compose interpolation requires ROKU_DEVICE_IP)
         run: |
           # RFC 5737 documentation IP; never resolves to a real host
@@ -50,7 +50,7 @@ jobs:
   install-script-syntax:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: bash -n install.sh
         run: bash -n install.sh
       - name: install.sh --help exits 0
@@ -65,7 +65,7 @@ jobs:
   runner-image-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Runner binary is present and self-reports a version
         run: |
           IMG=$(grep -oP 'myoung34/github-runner@sha256:[a-f0-9]+' docker-compose.yml)
