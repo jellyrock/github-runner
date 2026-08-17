@@ -53,7 +53,7 @@ services:
     # periodically (~every 1-3 months); a stale local image then hits
     # "Runner version X is deprecated and cannot receive messages" and enters a
     # restart loop. Renovate bumps this digest via PR — see renovate.json.
-    image: myoung34/github-runner@sha256:d44fe848a52f733e248941670ffe51b1547725333bac8f867276bd7405cdb3d5
+    image: myoung34/github-runner@sha256:3b7bd45f57d9a241e507c6b44d309f6b43ae3befe48a6424682ec1feaa252fe8
     container_name: roku-runner
     depends_on:
       roku-runner-registrar:
